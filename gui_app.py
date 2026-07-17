@@ -1727,6 +1727,113 @@ class DementiaDetectionGUI:
         self.explain_text.insert(tk.END, "\n".join(lines))
         self.explain_text.config(state=tk.DISABLED)
 
+    def _build_experiment_graphs_figure(self, fm, gaze):
+        """Build a second PDF page containing the graphs generated during the
+        experiment: eye openness over time, blink regularity, gaze reaction time
+        and saccade speed. Returns a matplotlib Figure (or None if no data)."""
+        ear_history = fm.get('ear_history', []) or []
+        blink_times = fm.get('blink_times', []) or []
+        rt_data = list(gaze.get('reaction_times', []) or [])
+        ss_data = list(gaze.get('saccade_speeds', []) or [])
+
+        if not (ear_history or len(blink_times) > 1 or rt_data or ss_data):
+            return None
+
+        fig = Figure(figsize=(8.27, 11.69), dpi=120)  # A4 portrait
+        fig.subplots_adjust(left=0.10, right=0.94, top=0.90, bottom=0.07,
+                            hspace=0.45, wspace=0.30)
+        fig.text(0.5, 0.955, "Experiment Graphs", ha='center',
+                 fontsize=18, fontweight='bold', color='#1f4e5f')
+        fig.text(0.5, 0.935, "Signals recorded during the blink & gaze session",
+                 ha='center', fontsize=10, color='#2e8b8b')
+        fig.add_artist(plt.Line2D([0.07, 0.93], [0.925, 0.925],
+                                  color='#2e8b8b', lw=1.2, transform=fig.transFigure))
+
+        # 1. Eye openness over time (L/R split)
+        ax1 = fig.add_subplot(2, 2, 1)
+        if ear_history:
+            left_raw = [ear_to_percent(e['left']) for e in ear_history]
+            right_raw = [ear_to_percent(e['right']) for e in ear_history]
+            window_size = max(5, len(ear_history) // 30)
+            left_values = smooth_data(left_raw, window_size)
+            right_values = smooth_data(right_raw, window_size)
+            frames = list(range(len(ear_history)))
+            ax1.plot(frames, left_values, color='#3498db', linewidth=1.0, alpha=0.8, label='Left Eye (%)')
+            ax1.plot(frames, right_values, color='#9b59b6', linewidth=1.0, alpha=0.8, label='Right Eye (%)')
+            thresh_percent = ear_to_percent(fm.get('current_threshold', 0.25))
+            ax1.axhline(y=thresh_percent, color='red', linestyle='--', linewidth=1.2, label='Blink Threshold')
+            ax1.set_ylim(0, 100)
+            ax1.set_ylabel('Eye Openness (%)', fontsize=8)
+            ax1.set_xlabel('Frame', fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            ax1.legend(loc='lower right', fontsize=6)
+        else:
+            ax1.text(0.5, 0.5, 'Blink test not run', ha='center', va='center',
+                     fontsize=10, color='#a0aec0', transform=ax1.transAxes)
+        ax1.set_title('Eye Openness Over Time', fontsize=10, fontweight='bold', color='#555')
+
+        # 2. Blink regularity (inter-blink intervals)
+        ax2 = fig.add_subplot(2, 2, 2)
+        if len(blink_times) > 1:
+            intervals = np.diff(blink_times)
+            x_pos = np.arange(len(intervals))
+            colors = ['#2ecc71' if 2.0 <= iv <= 6.0 else '#e74c3c' for iv in intervals]
+            ax2.axhspan(2.0, 6.0, color='#2ecc71', alpha=0.10, label='Normal (2-6s)')
+            ax2.bar(x_pos, intervals, color=colors, width=0.6)
+            ax2.set_ylim(0, max(5.0, max(intervals) * 1.2))
+            ax2.set_xlabel('Blink #', fontsize=8)
+            ax2.set_ylabel('Interval (s)', fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(loc='upper right', fontsize=6)
+        else:
+            ax2.text(0.5, 0.5, 'Not enough blinks', ha='center', va='center',
+                     fontsize=10, color='#a0aec0', transform=ax2.transAxes)
+        ax2.set_title('Blink Regularity (Intervals)', fontsize=10, fontweight='bold', color='#555')
+
+        # 3. Gaze reaction time per trial
+        ax3 = fig.add_subplot(2, 2, 3)
+        if rt_data:
+            x_pos = np.arange(len(rt_data))
+            mean_rt = float(np.mean(rt_data))
+            bar_colors = ['#2ecc71' if v <= 0.5 else '#f39c12' if v <= 1.0 else '#e74c3c' for v in rt_data]
+            ax3.plot(x_pos, rt_data, color='#f39c12', marker='o', linewidth=1.8, zorder=3)
+            ax3.scatter(x_pos, rt_data, color=bar_colors, s=35, zorder=4)
+            ax3.axhspan(0, 0.5, color='#2ecc71', alpha=0.12, label='Normal (≤0.5s)')
+            ax3.axhline(mean_rt, color='#8e44ad', linestyle='--', linewidth=1.2, label=f'Mean {mean_rt:.2f}s')
+            ax3.set_ylim(0, max(2.0, max(rt_data) * 1.2))
+            ax3.set_xlabel('Trial', fontsize=8)
+            ax3.set_ylabel('Reaction time (s)', fontsize=8)
+            ax3.set_xticks(x_pos)
+            ax3.set_xticklabels([f"T{i+1}" for i in range(len(rt_data))], fontsize=6)
+            ax3.grid(True, alpha=0.3)
+            ax3.legend(loc='upper right', fontsize=6)
+        else:
+            ax3.text(0.5, 0.5, 'Gaze test not run', ha='center', va='center',
+                     fontsize=10, color='#a0aec0', transform=ax3.transAxes)
+        ax3.set_title('Gaze Reaction Time per Trial', fontsize=10, fontweight='bold', color='#555')
+
+        # 4. Saccade speed per trial
+        ax4 = fig.add_subplot(2, 2, 4)
+        if ss_data:
+            x_pos = np.arange(len(ss_data))
+            mean_ss = float(np.mean(ss_data))
+            bar_colors = ['#e74c3c' if v < 100 else '#f39c12' if v < 300 else '#2ecc71' for v in ss_data]
+            ax4.bar(x_pos, ss_data, color=bar_colors, width=0.6)
+            ax4.axhline(mean_ss, color='#8e44ad', linestyle='--', linewidth=1.2, label=f'Mean {mean_ss:.0f} px/s')
+            ax4.set_ylim(0, max(100, max(ss_data) * 1.2))
+            ax4.set_xlabel('Trial', fontsize=8)
+            ax4.set_ylabel('Speed (px/s)', fontsize=8)
+            ax4.set_xticks(x_pos)
+            ax4.set_xticklabels([f"T{i+1}" for i in range(len(ss_data))], fontsize=6)
+            ax4.grid(True, alpha=0.3)
+            ax4.legend(loc='upper right', fontsize=6)
+        else:
+            ax4.text(0.5, 0.5, 'Gaze test not run', ha='center', va='center',
+                     fontsize=10, color='#a0aec0', transform=ax4.transAxes)
+        ax4.set_title('Saccade Speed per Trial', fontsize=10, fontweight='bold', color='#555')
+
+        return fig
+
     def generate_report(self):
         """Generate a polished one-page PDF clinical screening report (uses matplotlib)."""
         try:
@@ -1862,6 +1969,10 @@ class DementiaDetectionGUI:
 
             with PdfPages(out_path) as pdf:
                 pdf.savefig(fig)
+                # Page 2: the graphs generated during the experiment
+                fig2 = self._build_experiment_graphs_figure(fm, gaze)
+                if fig2 is not None:
+                    pdf.savefig(fig2)
 
             messagebox.showinfo("Report Generated",
                                 f"PDF report saved to:\n{out_path}")
@@ -1871,6 +1982,37 @@ class DementiaDetectionGUI:
                 pass
         except Exception as e:
             messagebox.showerror("Report Error", f"Could not generate report:\n{e}")
+
+    def _migrate_csv_header(self, csv_file, headers):
+        """Ensure an existing CSV has the current header. If new columns were
+        added, rewrite the header and pad every existing data row with blanks so
+        the columns stay aligned."""
+        try:
+            with open(csv_file, mode='r', newline='', encoding='utf-8') as f:
+                rows = list(csv.reader(f))
+        except Exception:
+            return  # If we can't read it, leave it alone and let append proceed
+
+        if not rows:
+            return
+        existing_header = rows[0]
+        if existing_header == headers:
+            return  # Already up to date
+
+        # Only migrate when we are strictly adding columns to the known header
+        if headers[:len(existing_header)] != existing_header:
+            return
+
+        target_len = len(headers)
+        new_rows = [headers]
+        for r in rows[1:]:
+            if len(r) < target_len:
+                r = r + [''] * (target_len - len(r))
+            new_rows.append(r)
+
+        with open(csv_file, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerows(new_rows)
 
     def export_patient_data(self):
         """Export all session and patient data to central CSV"""
@@ -1883,7 +2025,8 @@ class DementiaDetectionGUI:
             "Total Blinks", "Blink Rate (bpm)", "Avg EAR", "Eye Risk Level", "Eye Score (%)",
             "Avg Reaction Time", "Avg Saccade Speed", "Gaze Accuracy", "Trials", "Gaze Score (%)",
             "Voice Risk Level", "Voice Risk Score (%)", "Speech Rate", "Voice Jitter", "Voice Shimmer", "Voice HNR", "Voice Silence %",
-            "Overall Score (%)", "Overall Level", "Top Risk Driver"
+            "Overall Score (%)", "Overall Level", "Top Risk Driver",
+            "No of Blinks", "Total Reaction Time"
         ]
         
         gaze = getattr(self, 'gaze_results', {})
@@ -1940,10 +2083,18 @@ class DementiaDetectionGUI:
             v_met.get('frac_silence', ''),
             overall_score_csv,
             overall_level_csv,
-            top_driver_csv
+            top_driver_csv,
+            # New columns: number of blinks and the total (summed) reaction time
+            self.final_metrics.get('total_blinks', 0),
+            round(sum(gaze.get('reaction_times', []) or []), 2),
         ]
-        
+
         try:
+            # If the file already exists with an older header (fewer columns),
+            # migrate it so the new columns line up for existing rows too.
+            if file_exists:
+                self._migrate_csv_header(csv_file, headers)
+
             with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 if not file_exists:
